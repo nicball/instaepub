@@ -20,13 +20,14 @@ import Network.HTTP.Client (parseRequest, httpLbs, responseBody)
 import Network.HTTP.Client.TLS (newTlsManager)
 import Text.Pandoc (def, runIOorExplode, readHtml, docTitle, Pandoc(Pandoc), writeEPUB3, ReaderOptions (readerStandalone), WriterOptions (writerTemplate), compileDefaultTemplate)
 import Text.Pandoc.Shared (stringify)
-import Web.Scotty (scotty, get, formParam, setHeader, json, html, raw, regex)
+import Web.Scotty (scotty, get, post, formParam, setHeader, json, html, raw, regex, redirect)
 
 main :: IO ()
 main = scotty 8086 do
-  get "/save" do
+  post "/save" do
     url <- formParam "url"
     liftIO . void . forkIO $ saveUrl url
+    redirect "https://nicball.online/instaepub"
   get "/appmanifest" do
     setHeader "Content-Type" "application/manifest+json"
     json $ [aesonQQ| {
@@ -36,14 +37,24 @@ main = scotty 8086 do
         "type": "image/png",
         "sizes": "512x512"
       } ],
-      "start_url": ".",
-      "display": "browser",
+      "start_url": "/",
+      "display": "standalone",
       "share_target": {
-        "action": "save",
+        "action": "/save",
+        "method": "POST",
+        "enctype": "multipart/form-data",
         "params": {
-          "url": "url"
+          "title": "title",
+          "text": "url",
+          "url": "link",
+          "files": []
         }
-      }
+      },
+      "screenshots": [ {
+        "src": "screenshot.jpg",
+        "sizes": "600x600",
+        "type": "image/jpeg"
+      } ]
     } |]
   get (regex "^/(index.html)?$") . html $ [__i|
     <!DOCTYPE html>
@@ -53,13 +64,19 @@ main = scotty 8086 do
         <title>InstaEpub</title>
       </head>
       <body>
-        <h1>？没东西快走</h1>
+        <form action="/save" method="post" enctype="multipart/form-data">
+          <input type="url" name="url" />
+          <input type="submit" value="Read it later!" />
+        </form>
       </body>
     </html>
   |]
   get "/icon.png" do
     setHeader "Content-Type" "image/png"
     raw (LBS.fromStrict $(embedFile "icon.png"))
+  get "/screenshot.jpg" do
+    setHeader "Content-Type" "image/jpeg"
+    raw (LBS.fromStrict $(embedFile "screenshot.jpg"))
 
 saveUrl :: Text -> IO ()
 saveUrl url = do
