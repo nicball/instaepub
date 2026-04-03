@@ -71,7 +71,7 @@ executable instaepub
     build-depends:    base ^>=4.20.2.0
                     , pandoc
                     , text
-                    , scotty
+                    , scotty >=0.30
                     , http-client
                     , http-client-tls
                     , bytestring
@@ -79,6 +79,7 @@ executable instaepub
                     , aeson
                     , string-interpolate
                     , file-embed
+                    , containers
 
     -- Directories containing source files.
     hs-source-dirs:   app

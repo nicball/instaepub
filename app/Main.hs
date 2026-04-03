@@ -3,91 +3,134 @@
 module Main (main) where
 
 import Control.Concurrent (forkIO)
-import Control.Exception (throwIO)
+import Control.Concurrent.MVar (MVar, newMVar, modifyMVar, modifyMVar_, readMVar)
+import Control.Exception (throwIO, handle)
 import Control.Monad.IO.Class (liftIO)
 import Data.Aeson.QQ.Simple (aesonQQ)
 import Data.ByteString.Lazy qualified as LBS
 import Data.Char (isLetter, isSpace, isNumber)
 import Data.FileEmbed (embedFile)
 import Data.Functor (void)
+import Data.IntMap.Strict qualified as Map
 import Data.String.Interpolate (__i)
 import Data.Text.Encoding qualified as Text
 import Data.Text.IO qualified as Text
+import Data.Text.Lazy qualified as TextL
 import Data.Text qualified as Text
 import Data.Text (Text)
 import Data.Time.Clock.POSIX (getPOSIXTime)
-import Network.HTTP.Client (parseRequest, httpLbs, responseBody)
+import GHC.Exception (Exception)
+import Network.HTTP.Client (parseRequest, httpLbs, responseBody, HttpException)
 import Network.HTTP.Client.TLS (newTlsManager)
-import Text.Pandoc (def, runIOorExplode, readHtml, docTitle, Pandoc(Pandoc), writeEPUB3, ReaderOptions (readerStandalone), WriterOptions (writerTemplate), compileDefaultTemplate)
+import Text.Pandoc (def, readHtml, docTitle, Pandoc(Pandoc), writeEPUB3, ReaderOptions (readerStandalone), WriterOptions (writerTemplate), compileDefaultTemplate, runIO, PandocError)
 import Text.Pandoc.Shared (stringify)
-import Web.Scotty (scotty, get, post, formParam, setHeader, json, html, raw, regex, redirect)
+import Web.Scotty (scotty, get, post, formParam, pathParam, setHeader, json, html, text, raw, regex, redirect303, next)
 
 main :: IO ()
-main = scotty 8086 do
-  post "/save" do
-    url <- formParam "url"
-    liftIO . void . forkIO $ saveUrl url
-    redirect "https://nicball.online/instaepub"
-  get "/appmanifest" do
-    setHeader "Content-Type" "application/manifest+json"
-    json $ [aesonQQ| {
-      "name": "InstaEpub",
-      "icons": [ {
-        "src": "icon.png",
-        "type": "image/png",
-        "sizes": "512x512"
-      } ],
-      "start_url": "/",
-      "display": "standalone",
-      "share_target": {
-        "action": "/save",
-        "method": "POST",
-        "enctype": "multipart/form-data",
-        "params": {
-          "title": "title",
-          "text": "url",
-          "url": "link",
-          "files": []
-        }
-      },
-      "screenshots": [ {
-        "src": "screenshot.jpg",
-        "sizes": "600x600",
-        "type": "image/jpeg"
-      } ]
-    } |]
-  get (regex "^/(index.html)?$") . html $ [__i|
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <link rel="manifest" href="/appmanifest" crossorigin="use-credentials" />
-        <title>InstaEpub</title>
-      </head>
-      <body>
-        <form action="/save" method="post" enctype="multipart/form-data">
-          <input type="url" name="url" />
-          <input type="submit" value="Read it later!" />
-        </form>
-      </body>
-    </html>
-  |]
-  get "/icon.png" do
-    setHeader "Content-Type" "image/png"
-    raw (LBS.fromStrict $(embedFile "icon.png"))
-  get "/screenshot.jpg" do
-    setHeader "Content-Type" "image/jpeg"
-    raw (LBS.fromStrict $(embedFile "screenshot.jpg"))
+main = do
+  jobs <- newJobs
+  scotty 8086 do
+    post "/jobs" do
+      url <- formParam "url"
+      jid <- liftIO . newJob $ jobs
+      liftIO . void . forkIO . saveUrl jobs jid $ url
+      redirect303 $ "/jobs/" <> TextL.pack (show jid)
+    get (regex "^/jobs/([0-9]+)") do
+      jid <- pathParam "1"
+      let body status = text $ "Job ID: " <> TextL.pack (show jid) <> "\nStatus: " <> TextL.pack (show status)
+      liftIO (queryJob jobs jid) >>= maybe next body
+    get "/appmanifest" do
+      setHeader "Content-Type" "application/manifest+json"
+      json $ [aesonQQ| {
+        "name": "InstaEpub",
+        "icons": [ {
+          "src": "/icon.png",
+          "type": "image/png",
+          "sizes": "512x512"
+        } ],
+        "start_url": "/",
+        "display": "standalone",
+        "share_target": {
+          "action": "/jobs",
+          "method": "POST",
+          "enctype": "multipart/form-data",
+          "params": {
+            "title": "title",
+            "text": "url",
+            "url": "link",
+            "files": []
+          }
+        },
+        "screenshots": [ {
+          "src": "/screenshot.jpg",
+          "sizes": "600x600",
+          "type": "image/jpeg"
+        } ]
+      } |]
+    get (regex "^/(index.html)?$") . html $ [__i|
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <link rel="manifest" href="/appmanifest" crossorigin="use-credentials" />
+          <title>InstaEpub</title>
+        </head>
+        <body>
+          <form action="/jobs" method="post" enctype="multipart/form-data">
+            <input type="url" name="url" />
+            <input type="submit" value="Read it later!" />
+          </form>
+        </body>
+      </html>
+    |]
+    get "/icon.png" do
+      setHeader "Content-Type" "image/png"
+      raw (LBS.fromStrict $(embedFile "icon.png"))
+    get "/screenshot.jpg" do
+      setHeader "Content-Type" "image/jpeg"
+      raw (LBS.fromStrict $(embedFile "screenshot.jpg"))
 
-saveUrl :: Text -> IO ()
-saveUrl url = do
+data JobStatus
+  = Pending
+  | forall e. Exception e => Failed e
+  | Done Text
+
+deriving instance Show JobStatus
+
+data Jobs = Jobs (MVar (Map.IntMap JobStatus))
+
+newJobs :: IO Jobs
+newJobs = Jobs <$> newMVar Map.empty
+
+newJob :: Jobs -> IO Int
+newJob (Jobs jobs) = modifyMVar jobs \m -> do
+  let i = (+ 1) . maybe 0 fst . Map.lookupMax $ m
+  let m' = Map.insert i Pending m
+  pure (m', i + 1)
+
+doneJob :: Jobs -> Int -> Text -> IO ()
+doneJob (Jobs jobs) i msg = modifyMVar_ jobs $ pure . Map.insert i (Done msg)
+
+failJob :: Exception e => Jobs -> Int -> e -> IO ()
+failJob (Jobs jobs) i e = modifyMVar_ jobs $ pure . Map.insert i (Failed e)
+
+queryJob :: Jobs -> Int -> IO (Maybe JobStatus)
+queryJob (Jobs jobs) i = (Map.!? i) <$> readMVar jobs
+
+saveUrl :: Jobs -> Int -> Text -> IO ()
+saveUrl jobs jid url = handleHttpException . handlePandocError $ do
   html' <- fetchHtml url
-  (title, epub) <- runIOorExplode do
+  (title, epub) <- liftEither =<< runIO do
     tmpl <- compileDefaultTemplate "epub3"
     doc@(Pandoc meta _) <- readHtml def { readerStandalone = True } html'
     (stringify (docTitle meta), ) <$> writeEPUB3 def { writerTemplate = Just tmpl } doc
   Text.putStrLn $ "Fetched article: " <> title
-  time <- show <$> getPOSIXTime
-  LBS.writeFile (Text.unpack (sanitizeFileName title) <> "." <> time <> ".epub") epub
+  time <- Text.pack . show <$> getPOSIXTime
+  let fname = time <> "." <> sanitizeFileName title <> ".epub"
+  LBS.writeFile (Text.unpack fname) epub
+  doneJob jobs jid ("Saved as " <> fname)
+  where
+  handleHttpException = handle \(e :: HttpException) -> failJob jobs jid e
+  handlePandocError = handle \(e :: PandocError) -> failJob jobs jid e
 
 sanitizeFileName :: Text -> Text
 sanitizeFileName = Text.map \c ->
@@ -101,6 +144,7 @@ fetchHtml url = do
   req <- parseRequest (Text.unpack url)
   resp <- httpLbs req man
   liftEither . Text.decodeUtf8' . LBS.toStrict . responseBody $ resp
-  where
-    liftEither (Left e) = throwIO e
-    liftEither (Right a) = pure a
+
+liftEither :: Exception e => Either e a -> IO a
+liftEither (Left e) = throwIO e
+liftEither (Right a) = pure a
