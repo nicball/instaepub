@@ -69,19 +69,21 @@ executable instaepub
 
     -- Other library packages from which modules are imported.
     build-depends:    base ^>=4.20.2.0
-                    , pandoc
-                    , text
-                    , scotty >=0.30
-                    , http-client
-                    , http-client-tls
-                    , bytestring
-                    , time
                     , aeson
-                    , string-interpolate
-                    , file-embed
+                    , bytestring
                     , containers
                     , directory
+                    , file-embed
+                    , http-client
+                    , http-client-tls
                     , http-types
+                    , pandoc
+                    , pandoc-types
+                    , scotty >=0.30
+                    , string-interpolate
+                    , text
+                    , time
+                    , modern-uri
 
     -- Directories containing source files.
     hs-source-dirs:   app

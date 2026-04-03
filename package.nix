@@ -1,6 +1,7 @@
 { mkDerivation, aeson, base, bytestring, containers, directory
-, file-embed, http-client, http-client-tls, http-types, lib, pandoc
-, scotty_0_30, string-interpolate, text, time
+, file-embed, http-client, http-client-tls, http-types, lib
+, modern-uri, pandoc, pandoc-types, scotty_0_30, string-interpolate
+, text, time
 }:
 mkDerivation {
   pname = "instaepub";
@@ -10,8 +11,8 @@ mkDerivation {
   isExecutable = true;
   executableHaskellDepends = [
     aeson base bytestring containers directory file-embed http-client
-    http-client-tls http-types pandoc scotty_0_30 string-interpolate text
-    time
+    http-client-tls http-types modern-uri pandoc pandoc-types scotty_0_30
+    string-interpolate text time
   ];
   license = lib.licensesSpdx."AGPL-3.0-or-later";
   mainProgram = "instaepub";

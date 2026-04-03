@@ -12,6 +12,7 @@ import Data.Char (isLetter, isSpace, isNumber)
 import Data.FileEmbed (embedFile)
 import Data.Functor (void)
 import Data.IntMap.Strict qualified as Map
+import Data.Maybe (fromJust)
 import Data.String.Interpolate (__i)
 import Data.Text.Encoding qualified as Text
 import Data.Text.IO qualified as Text
@@ -26,8 +27,10 @@ import Network.HTTP.Client.TLS (newTlsManager)
 import Network.HTTP.Types.Status (status404, status403)
 import System.Directory (removeFile)
 import System.Environment (getEnv)
-import Text.Pandoc (def, readHtml, docTitle, Pandoc(Pandoc), writeEPUB3, ReaderOptions (readerStandalone), WriterOptions (writerTemplate), compileDefaultTemplate, runIO, PandocError)
+import Text.Pandoc (def, readHtml, docTitle, Pandoc(Pandoc), writeEPUB3, ReaderOptions(readerStandalone), WriterOptions(writerTemplate), compileDefaultTemplate, runIO, PandocError, Inline(Link, Image))
 import Text.Pandoc.Shared (stringify)
+import Text.Pandoc.Walk (Walkable(walk))
+import Text.URI qualified as URI
 import Web.Scotty (scotty, get, post, queryParam, formParam, pathParam, setHeader, json, html, text, raw, regex, redirect303, next, status)
 
 {-# NOINLINE hostName #-}
@@ -140,10 +143,11 @@ queryJob (Jobs jobs) i = (Map.!? i) <$> readMVar jobs
 saveUrl :: Jobs -> Int -> Text -> IO ()
 saveUrl jobs jid url = handleHttpException . handlePandocError $ do
   html' <- fetchHtml url
+  base <- URI.mkURI url
   (title, epub) <- liftEither =<< runIO do
     tmpl <- compileDefaultTemplate "epub3"
     del <- readHtml def $ "<p><a href=\"https://" <> hostName <> "/deleteJob?id=" <> Text.pack (show jid) <> "\">Delete this document</a></p>"
-    doc@(Pandoc meta _) <- readHtml def { readerStandalone = True } html'
+    doc@(Pandoc meta _) <- addBaseToLinks base <$> readHtml def { readerStandalone = True } html'
     (stringify (docTitle meta), ) <$> writeEPUB3 def { writerTemplate = Just tmpl } (del <> doc <> del)
   Text.putStrLn $ "Fetched article: " <> title
   time <- Text.pack . show <$> getPOSIXTime
@@ -153,6 +157,16 @@ saveUrl jobs jid url = handleHttpException . handlePandocError $ do
   where
   handleHttpException = handle \(e :: HttpException) -> failJob jobs jid e
   handlePandocError = handle \(e :: PandocError) -> failJob jobs jid e
+  addBaseToLinks base = walk \case
+    link@(Link attr alts (href, title)) ->
+      case URI.mkURI href of
+        Nothing -> link
+        Just u -> Link attr alts (URI.render . fromJust $ u `URI.relativeTo` base, title)
+    image@(Image attr alts (href, title))->
+      case URI.mkURI href of
+        Nothing -> image
+        Just u -> Image attr alts (URI.render . fromJust $ u `URI.relativeTo` base, title)
+    inline -> inline
 
 sanitizeFileName :: Text -> Text
 sanitizeFileName = Text.map \c ->
