@@ -80,6 +80,8 @@ executable instaepub
                     , string-interpolate
                     , file-embed
                     , containers
+                    , directory
+                    , http-types
 
     -- Directories containing source files.
     hs-source-dirs:   app
