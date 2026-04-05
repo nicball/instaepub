@@ -24,14 +24,15 @@ import GHC.Exception (Exception)
 import GHC.IO.Unsafe (unsafePerformIO)
 import Network.HTTP.Client (parseRequest, httpLbs, responseBody, HttpException)
 import Network.HTTP.Client.TLS (newTlsManager)
-import Network.HTTP.Types.Status (status404, status403)
+import Network.HTTP.Types.Status (status404, status403, status400)
 import System.Directory (removeFile)
 import System.Environment (getEnv)
 import Text.Pandoc (def, readHtml, docTitle, Pandoc(Pandoc), writeEPUB3, ReaderOptions(readerStandalone), WriterOptions(writerTemplate), compileDefaultTemplate, runIO, PandocError, Inline(Link, Image))
 import Text.Pandoc.Shared (stringify)
 import Text.Pandoc.Walk (Walkable(walk))
+import Text.Regex.TDFA ((=~), getAllTextMatches)
 import Text.URI qualified as URI
-import Web.Scotty (scotty, get, post, queryParam, formParam, pathParam, setHeader, json, html, text, raw, regex, redirect303, next, status)
+import Web.Scotty (scotty, get, post, queryParam, formParam, pathParam, setHeader, json, html, text, raw, regex, redirect303, next, finish, status)
 
 {-# NOINLINE hostName #-}
 hostName :: Text
@@ -42,7 +43,12 @@ main = do
   jobs <- newJobs
   scotty 8086 do
     post "/jobs" do
-      url <- formParam "url"
+      url <- detectUrl <$> formParam "url" >>= \case
+        [] -> do
+          status status400
+          text "Coundn't find any URLs."
+          finish
+        x : _ -> pure x
       jid <- liftIO . newJob $ jobs
       liftIO . void . forkIO . saveUrl jobs jid $ url
       redirect303 $ "/jobs/" <> TextL.pack (show jid)
@@ -167,6 +173,28 @@ saveUrl jobs jid url = handleHttpException . handlePandocError $ do
         Nothing -> image
         Just u -> Image attr alts (URI.render . fromJust $ u `URI.relativeTo` base, title)
     inline -> inline
+
+detectUrl :: Text -> [Text]
+detectUrl t = getAllTextMatches (t =~ url)
+  where
+  url :: Text
+  url = "(((http|https|Http|Https)://(([-a-zA-Z0-9$_.+!*'()"
+      <> ",;?&=]|(%[a-fA-F0-9]{2})){1,64}(:([-a-zA-Z0-9$_"
+      <> ".+!*'(),;?&=]|(%[a-fA-F0-9]{2})){1,25})?@)?)?"
+      <> "(" <> domainName <> ")"
+      <> "(:[[:digit:]]{1,5})?)" -- plus option port number
+      <> "(/(([-" <> goodIriChar <> ";/?:@&=#~"  -- plus option query params
+      <> ".+!*'(),_])|(%[a-fA-F0-9]{2}))*)?"
+  domainName = "(" <> hostName' <> "|" <> ipAddress <> ")"
+  hostName' = "(" <> iri <> "\\.)+" <> gtld
+  iri = "[" <> goodIriChar <> "]([-" <> goodIriChar <> "]{0,61}[" <> goodIriChar <> "]){0,1}"
+  gtld = "[" <> goodGtldChar <> "]{2,63}"
+  goodGtldChar = "a-zA-Z\x00A0-\xD7FF\xF900-\xFDCF\xFDF0-\xFFEF"
+  goodIriChar = "a-zA-Z0-9\x00A0-\xD7FF\xF900-\xFDCF\xFDF0-\xFFEF"
+  ipAddress = "((25[0-5]|2[0-4][0-9]|[0-1][0-9]{2}|[1-9][0-9]|[1-9])\\.(25[0-5]|2[0-4]"
+    <> "[0-9]|[0-1][0-9]{2}|[1-9][0-9]|[1-9]|0)\\.(25[0-5]|2[0-4][0-9]|[0-1]"
+    <> "[0-9]{2}|[1-9][0-9]|[1-9]|0)\\.(25[0-5]|2[0-4][0-9]|[0-1][0-9]{2}"
+    <> "|[1-9][0-9]|[0-9]))"
 
 sanitizeFileName :: Text -> Text
 sanitizeFileName = Text.map \c ->

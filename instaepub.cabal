@@ -79,6 +79,7 @@ executable instaepub
                     , http-types
                     , pandoc
                     , pandoc-types
+                    , regex-tdfa
                     , scotty >=0.30
                     , string-interpolate
                     , text
