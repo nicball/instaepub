@@ -38,7 +38,7 @@ import Text.Regex.TDFA ((=~), getAllTextMatches)
 import Text.URI qualified as URI
 import Web.Scotty (scotty, get, post, queryParam, formParam, pathParam, setHeader, json, html, text, raw, regex, redirect303, next, finish, status, Parsable(..), readEither)
 
-import Persist (JobID, Jobs, Status(..), Job(..), newJobs, newJob, doneJob, failJob, queryJob, getJobs, getPendingJobs)
+import Persist (JobID, Jobs, Status(..), Job(..), newJobs, newJob, doneJob, failJob, queryJob, getJobs, getPendingJobs, markJob)
 
 {-# NOINLINE hostName #-}
 hostName :: Text
@@ -76,8 +76,12 @@ main = do
         Just job -> case job.status of
           Failed msg -> text . TextL.fromStrict $ msg
           _ -> next
+    get "/mark" do
+      jid <- parseJobID <$> queryParam "id"
+      liftIO $ markJob jobs jid True
+      text "Marked!"
     get "/jobs" do
-      topJobs <- liftIO $ getJobs jobs 50
+      topJobs <- liftIO $ getJobs jobs
       tz <- liftIO getCurrentTimeZone
       html . renderHtml $ [shamlet|
         $doctype 5
@@ -89,6 +93,7 @@ main = do
                 <th>URL
                 <th>Title
                 <th>Status
+                <th>Read?
               $forall job <- topJobs
                 <tr>
                   <td>#{formatTime defaultTimeLocale rfc822DateFormat (utcToLocalTime tz job.timeStamp)}
@@ -109,6 +114,10 @@ main = do
                       <td>
                         <a href="/jobs/#{show job.id}/errorLog">
                           Failed
+                  $if job.read
+                    <td>✓
+                  $else
+                    <td>✗
 
       |]
     get "/appmanifest" do
@@ -169,9 +178,9 @@ saveUrl jobs jid url = handleHttpException . handlePandocError $ do
   base <- URI.mkURI url
   (title, epub) <- liftEither =<< runIO do
     tmpl <- compileDefaultTemplate "epub3"
-    del <- readHtml def $ "<p><a href=\"https://" <> hostName <> "/deleteJob?id=" <> Text.pack (show jid) <> "\">Delete this document</a></p>"
+    mark <- readHtml def $ "<p><a href=\"https://" <> hostName <> "/mark?id=" <> Text.pack (show jid) <> "\">Mark this document as read</a></p>"
     doc@(Pandoc meta _) <- addBaseToLinks base <$> readHtml def { readerStandalone = True } html'
-    (stringify (docTitle meta), ) <$> writeEPUB3 def { writerTemplate = Just tmpl } (del <> doc <> del)
+    (stringify (docTitle meta), ) <$> writeEPUB3 def { writerTemplate = Just tmpl } (mark <> doc <> mark)
   Text.putStrLn $ "Fetched article: " <> title
   doneJob jobs jid title (LBS.toStrict epub)
   where

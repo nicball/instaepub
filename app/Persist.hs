@@ -20,12 +20,13 @@ module Persist
   , queryJob
   , getJobs
   , getPendingJobs
+  , markJob
   ) where
 
 import Control.Arrow (first)
 import Control.Monad (void)
 import Control.Monad.Logger (runStderrLoggingT, filterLogger, LogLevel(..))
-import Database.Persist (PersistEntity(Key), PersistStoreRead(get), getBy, PersistStoreWrite(update, insert), (=.), selectList, SelectOpt(Desc, LimitTo), Entity(Entity), (==.))
+import Database.Persist (PersistEntity(Key), PersistStoreRead(get), getBy, PersistStoreWrite(update, insert), (=.), selectList, SelectOpt(Desc), Entity(Entity), (==.))
 import Database.Persist.Sqlite (createSqlitePool)
 import Database.Persist.Sql (runMigration, SqlBackend, runSqlPersistMPool)
 import Database.Persist.TH (mkMigrate, mkPersist, persistLowerCase, share, sqlSettings)
@@ -116,12 +117,17 @@ convertJobE jobs (Entity jid (JobE url ts st mel mtitle rd)) = Job (JobID jid) u
     convertStatus FailedE (Just msg) _ = Failed msg
     convertStatus _ _ _ = undefined
 
-getJobs :: Jobs -> Int -> IO [Job]
-getJobs jobs limit = do
+getJobs :: Jobs -> IO [Job]
+getJobs jobs = do
   flip runSqlPersistMPool jobs.pool do
-    map (convertJobE jobs) <$> selectList [] [Desc JobETimeStamp, LimitTo limit]
+    map (convertJobE jobs) <$> selectList [] [Desc JobETimeStamp]
 
 getPendingJobs :: Jobs -> IO [Job]
 getPendingJobs jobs = do
   flip runSqlPersistMPool jobs.pool do
     map (convertJobE jobs) <$> selectList [JobEStatus ==. PendingE] []
+
+markJob :: Jobs -> JobID -> Bool -> IO ()
+markJob jobs jid rd = do
+  flip runSqlPersistMPool jobs.pool do
+    update jid.key [JobERead =. rd]
