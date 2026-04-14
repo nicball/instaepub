@@ -62,7 +62,8 @@ executable instaepub
     main-is:          Main.hs
 
     -- Modules included in this executable, other than Main.
-    -- other-modules:
+    other-modules:    Persist
+                    , Persist.Types
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
@@ -70,21 +71,25 @@ executable instaepub
     -- Other library packages from which modules are imported.
     build-depends:    base ^>=4.20.2.0
                     , aeson
+                    , blaze-html
                     , bytestring
                     , containers
-                    , directory
                     , file-embed
                     , http-client
                     , http-client-tls
                     , http-types
+                    , modern-uri
+                    , monad-logger
                     , pandoc
                     , pandoc-types
+                    , persistent
+                    , persistent-sqlite
                     , regex-tdfa
+                    , resource-pool
                     , scotty >=0.30
-                    , string-interpolate
+                    , shakespeare
                     , text
                     , time
-                    , modern-uri
 
     -- Directories containing source files.
     hs-source-dirs:   app

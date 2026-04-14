@@ -1,9 +1,13 @@
-{-# LANGUAGE OverloadedStrings, BlockArguments, QuasiQuotes, TemplateHaskell, LambdaCase #-}
+{-# LANGUAGE OverloadedStrings
+           , BlockArguments
+           , QuasiQuotes
+           , TemplateHaskell
+           , LambdaCase
+           , OverloadedRecordDot #-}
 
 module Main (main) where
 
 import Control.Concurrent (forkIO)
-import Control.Concurrent.MVar (MVar, newMVar, modifyMVar, modifyMVar_, readMVar)
 import Control.Exception (throwIO, handle)
 import Control.Monad.IO.Class (liftIO)
 import Data.Aeson.QQ.Simple (aesonQQ)
@@ -11,28 +15,30 @@ import Data.ByteString.Lazy qualified as LBS
 import Data.Char (isLetter, isSpace, isNumber)
 import Data.FileEmbed (embedFile)
 import Data.Functor (void)
-import Data.IntMap.Strict qualified as Map
 import Data.Maybe (fromJust)
-import Data.String.Interpolate (__i)
 import Data.Text.Encoding qualified as Text
 import Data.Text.IO qualified as Text
 import Data.Text.Lazy qualified as TextL
 import Data.Text qualified as Text
 import Data.Text (Text)
-import Data.Time.Clock.POSIX (getPOSIXTime)
+import Data.Time.LocalTime (getCurrentTimeZone, utcToLocalTime)
+import Data.Time.Format (formatTime, defaultTimeLocale, rfc822DateFormat)
 import GHC.Exception (Exception)
 import GHC.IO.Unsafe (unsafePerformIO)
 import Network.HTTP.Client (parseRequest, httpLbs, responseBody, HttpException)
 import Network.HTTP.Client.TLS (newTlsManager)
 import Network.HTTP.Types.Status (status404, status403, status400)
-import System.Directory (removeFile)
 import System.Environment (getEnv)
+import Text.Blaze.Html.Renderer.Text (renderHtml)
+import Text.Hamlet (shamlet)
 import Text.Pandoc (def, readHtml, docTitle, Pandoc(Pandoc), writeEPUB3, ReaderOptions(readerStandalone), WriterOptions(writerTemplate), compileDefaultTemplate, runIO, PandocError, Inline(Link, Image))
 import Text.Pandoc.Shared (stringify)
 import Text.Pandoc.Walk (Walkable(walk))
 import Text.Regex.TDFA ((=~), getAllTextMatches)
 import Text.URI qualified as URI
-import Web.Scotty (scotty, get, post, queryParam, formParam, pathParam, setHeader, json, html, text, raw, regex, redirect303, next, finish, status)
+import Web.Scotty (scotty, get, post, queryParam, formParam, pathParam, setHeader, json, html, text, raw, regex, redirect303, next, finish, status, Parsable(..), readEither)
+
+import Persist (JobID, Jobs, Status(..), Job(..), newJobs, newJob, doneJob, failJob, queryJob, getJobs, getPendingJobs)
 
 {-# NOINLINE hostName #-}
 hostName :: Text
@@ -40,7 +46,8 @@ hostName = Text.pack . unsafePerformIO . getEnv $ "HOSTNAME"
 
 main :: IO ()
 main = do
-  jobs <- newJobs
+  jobs <- newJobs "./instaepub.sqlite"
+  restartPendingJobs jobs
   scotty 8086 do
     post "/jobs" do
       url <- detectUrl <$> formParam "url" >>= \case
@@ -49,22 +56,61 @@ main = do
           text "Coundn't find any URLs."
           finish
         x : _ -> pure x
-      jid <- liftIO . newJob $ jobs
+      jid <- liftIO . newJob jobs $ url
       liftIO . void . forkIO . saveUrl jobs jid $ url
-      redirect303 $ "/jobs/" <> TextL.pack (show jid)
-    get (regex "^/jobs/([0-9]+)") do
-      jid <- pathParam "1"
-      let body st = text $ "Job ID: " <> TextL.pack (show jid) <> "\nStatus: " <> TextL.pack (show st)
-      liftIO (queryJob jobs jid) >>= maybe next body
-    get "/deleteJob" do
-      jid <- queryParam "id"
+      redirect303 $ "/jobs"
+    get "/jobs/:jid/epub" do
+      jid <- parseJobID <$> pathParam "jid"
       liftIO (queryJob jobs jid) >>= \case
-        Nothing -> status status404 >> text "Job not found."
-        Just (Completed fname) -> do
-          liftIO . removeFile . Text.unpack $ fname
-          liftIO . deleteJob jobs $ jid
-          text "Done!"
-        _ -> status status403 >> text "File not generated or already deleted."
+        Nothing -> next
+        Just job -> case job.status of
+          Done title getEpub -> do
+            setHeader "Content-Type" "application/epub+zip"
+            setHeader "Content-Disposition" $ "attachment; filename=\"" <> TextL.fromStrict (sanitizeFileName title) <> ".epub\""
+            raw . LBS.fromStrict =<< liftIO getEpub
+          _ -> next
+    get "/jobs/:jid/errorLog" do
+      jid <- parseJobID <$> pathParam "jid"
+      liftIO (queryJob jobs jid) >>= \case
+        Nothing -> next
+        Just job -> case job.status of
+          Failed msg -> text . TextL.fromStrict $ msg
+          _ -> next
+    get "/jobs" do
+      topJobs <- liftIO $ getJobs jobs 50
+      tz <- liftIO getCurrentTimeZone
+      html . renderHtml $ [shamlet|
+        $doctype 5
+        <html>
+          <body>
+            <table>
+              <tr>
+                <th>Added
+                <th>URL
+                <th>Title
+                <th>Status
+              $forall job <- topJobs
+                <tr>
+                  <td>#{formatTime defaultTimeLocale rfc822DateFormat (utcToLocalTime tz job.timeStamp)}
+                  <td>
+                    <a href="#{job.url}">
+                      #{job.url}
+                  $case job.status
+                    $of Pending
+                      <td>N/A
+                      <td>Pending
+                    $of Done title _
+                      <td>#{title}
+                      <td>
+                        <a href="/jobs/#{show job.id}/epub">
+                          Completed
+                    $of Failed _
+                      <td>N/A
+                      <td>
+                        <a href="/jobs/#{show job.id}/errorLog">
+                          Failed
+
+      |]
     get "/appmanifest" do
       setHeader "Content-Type" "application/manifest+json"
       json $ [aesonQQ| {
@@ -93,20 +139,16 @@ main = do
           "type": "image/jpeg"
         } ]
       } |]
-    get (regex "^/(index.html)?$") . html $ [__i|
-      <!DOCTYPE html>
+    get (regex "^/(index.html)?$") . html . renderHtml $ [shamlet|
+      $doctype 5
       <html>
         <head>
-          <link rel="manifest" href="/appmanifest" crossorigin="use-credentials" />
-          <title>InstaEpub</title>
-        </head>
+          <link rel="manifest" href="/appmanifest" crossorigin="use-credentials">
+          <title>InstaEpub
         <body>
           <form action="/jobs" method="post" enctype="multipart/form-data">
-            <input type="url" name="url" />
-            <input type="submit" value="Read it later!" />
-          </form>
-        </body>
-      </html>
+            <input type="url" name="url">
+            <input type="submit" value="Read it later!">
     |]
     get "/icon.png" do
       setHeader "Content-Type" "image/png"
@@ -115,38 +157,13 @@ main = do
       setHeader "Content-Type" "image/jpeg"
       raw (LBS.fromStrict $(embedFile "screenshot.jpg"))
 
-data JobStatus
-  = Pending
-  | forall e. Exception e => Failed e
-  | Completed Text
-  | Deleted
+restartPendingJobs :: Jobs -> IO ()
+restartPendingJobs jobs = do
+  getPendingJobs jobs >>= mapM_ \job -> do
+    Text.putStrLn $ "Restarting " <> job.url
+    void . forkIO . saveUrl jobs job.id $ job.url
 
-deriving instance Show JobStatus
-
-data Jobs = Jobs (MVar (Map.IntMap JobStatus))
-
-newJobs :: IO Jobs
-newJobs = Jobs <$> newMVar Map.empty
-
-newJob :: Jobs -> IO Int
-newJob (Jobs jobs) = modifyMVar jobs \m -> do
-  let i = (+ 1) . maybe 0 fst . Map.lookupMax $ m
-  let m' = Map.insert i Pending m
-  pure (m', i + 1)
-
-completeJob :: Jobs -> Int -> Text -> IO ()
-completeJob (Jobs jobs) i path = modifyMVar_ jobs $ pure . Map.insert i (Completed path)
-
-deleteJob :: Jobs -> Int -> IO ()
-deleteJob (Jobs jobs) i = modifyMVar_ jobs $ pure . Map.insert i Deleted
-
-failJob :: Exception e => Jobs -> Int -> e -> IO ()
-failJob (Jobs jobs) i e = modifyMVar_ jobs $ pure . Map.insert i (Failed e)
-
-queryJob :: Jobs -> Int -> IO (Maybe JobStatus)
-queryJob (Jobs jobs) i = (Map.!? i) <$> readMVar jobs
-
-saveUrl :: Jobs -> Int -> Text -> IO ()
+saveUrl :: Jobs -> JobID -> Text -> IO ()
 saveUrl jobs jid url = handleHttpException . handlePandocError $ do
   html' <- fetchHtml url
   base <- URI.mkURI url
@@ -156,13 +173,10 @@ saveUrl jobs jid url = handleHttpException . handlePandocError $ do
     doc@(Pandoc meta _) <- addBaseToLinks base <$> readHtml def { readerStandalone = True } html'
     (stringify (docTitle meta), ) <$> writeEPUB3 def { writerTemplate = Just tmpl } (del <> doc <> del)
   Text.putStrLn $ "Fetched article: " <> title
-  time <- Text.pack . show <$> getPOSIXTime
-  let fname = time <> "." <> sanitizeFileName title <> ".epub"
-  LBS.writeFile (Text.unpack fname) epub
-  completeJob jobs jid fname
+  doneJob jobs jid title (LBS.toStrict epub)
   where
-  handleHttpException = handle \(e :: HttpException) -> failJob jobs jid e
-  handlePandocError = handle \(e :: PandocError) -> failJob jobs jid e
+  handleHttpException = handle \(e :: HttpException) -> failJob jobs jid . Text.pack . show $ e
+  handlePandocError = handle \(e :: PandocError) -> failJob jobs jid . Text.pack . show $ e
   addBaseToLinks base = walk \case
     link@(Link attr alts (href, title)) ->
       case URI.mkURI href of
@@ -212,3 +226,8 @@ fetchHtml url = do
 liftEither :: Exception e => Either e a -> IO a
 liftEither (Left e) = throwIO e
 liftEither (Right a) = pure a
+
+newtype ParseJobID = ParseJobID { parseJobID :: JobID }
+  deriving newtype Read
+instance Parsable ParseJobID where
+  parseParam = readEither

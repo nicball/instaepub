@@ -6,7 +6,8 @@
   outputs = { self, nixpkgs }: {
 
     packages.x86_64-linux.instaepub =
-      nixpkgs.legacyPackages.x86_64-linux.haskellPackages.callPackage ./package.nix {};
+      let hspkgs = nixpkgs.legacyPackages.x86_64-linux.haskellPackages; in
+      hspkgs.callPackage ./package.nix { scotty = hspkgs.scotty_0_30; };
 
     packages.x86_64-linux.default = self.packages.x86_64-linux.instaepub;
 
