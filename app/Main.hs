@@ -38,15 +38,14 @@ import Text.Regex.TDFA ((=~), getAllTextMatches)
 import Text.URI qualified as URI
 import Web.Scotty (scotty, get, post, queryParam, formParam, pathParam, setHeader, json, html, text, raw, regex, redirect303, next, finish, status, Parsable(..), readEither)
 
-import Persist (JobID, Jobs, Status(..), Job(..), newJobs, newJob, doneJob, failJob, queryJob, getJobs, getPendingJobs, markJob)
+import Persist (JobID, Jobs, Status(..), Job(..), withJobs, newJob, doneJob, failJob, queryJob, getJobs, getPendingJobs, markJob)
 
 {-# NOINLINE hostName #-}
 hostName :: Text
 hostName = Text.pack . unsafePerformIO . getEnv $ "HOSTNAME"
 
 main :: IO ()
-main = do
-  jobs <- newJobs "./instaepub.sqlite"
+main = withJobs "./instaepub.sqlite" \jobs -> do
   restartPendingJobs jobs
   scotty 8086 do
     post "/jobs" do

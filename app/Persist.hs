@@ -14,6 +14,8 @@ module Persist
   , Status(..)
   , JobID
   , newJobs
+  , closeJobs
+  , withJobs
   , newJob
   , doneJob
   , failJob
@@ -24,6 +26,7 @@ module Persist
   ) where
 
 import Control.Arrow (first)
+import Control.Exception (bracket)
 import Control.Monad (void)
 import Control.Monad.Logger (runStderrLoggingT, filterLogger, LogLevel(..))
 import Database.Persist (PersistEntity(Key), PersistStoreRead(get), getBy, PersistStoreWrite(update, insert), (=.), selectList, SelectOpt(Desc), Entity(Entity), (==.))
@@ -32,7 +35,7 @@ import Database.Persist.Sql (runMigration, SqlBackend, runSqlPersistMPool)
 import Database.Persist.TH (mkMigrate, mkPersist, persistLowerCase, share, sqlSettings)
 import Data.ByteString (ByteString)
 import Data.Maybe (fromJust)
-import Data.Pool (Pool)
+import Data.Pool (Pool, destroyAllResources)
 import Data.Text (Text)
 import Data.Time.Clock (UTCTime, getCurrentTime)
 
@@ -85,6 +88,12 @@ newJobs path = do
   pure . Jobs $ pool
   where
     warning _ level = level >= LevelWarn
+
+closeJobs :: Jobs -> IO ()
+closeJobs jobs = destroyAllResources jobs.pool
+
+withJobs :: Text -> (Jobs -> IO a) -> IO a
+withJobs path = bracket (newJobs path) closeJobs
 
 newJob :: Jobs -> Text -> IO JobID
 newJob jobs url = do
