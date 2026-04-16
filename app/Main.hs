@@ -27,7 +27,7 @@ import GHC.Exception (Exception)
 import GHC.IO.Unsafe (unsafePerformIO)
 import Network.HTTP.Client (parseRequest, httpLbs, responseBody, HttpException)
 import Network.HTTP.Client.TLS (newTlsManager)
-import Network.HTTP.Types.Status (status404, status403, status400)
+import Network.HTTP.Types.Status (status400)
 import System.Environment (getEnv)
 import Text.Blaze.Html.Renderer.Text (renderHtml)
 import Text.Hamlet (shamlet)
@@ -82,9 +82,12 @@ main = withJobs "./instaepub.sqlite" \jobs -> do
     get "/jobs" do
       topJobs <- liftIO $ getJobs jobs
       tz <- liftIO getCurrentTimeZone
+      let shorten t = if Text.length t > 50 then Text.take 47 t <> "..." else t
       html . renderHtml $ [shamlet|
         $doctype 5
         <html>
+          <head>
+            <title>Jobs - InstaEpub
           <body>
             <table>
               <tr>
@@ -98,7 +101,7 @@ main = withJobs "./instaepub.sqlite" \jobs -> do
                   <td>#{formatTime defaultTimeLocale rfc822DateFormat (utcToLocalTime tz job.timeStamp)}
                   <td>
                     <a href="#{job.url}">
-                      #{job.url}
+                      #{shorten job.url}
                   $case job.status
                     $of Pending
                       <td>N/A
