@@ -50,11 +50,11 @@ main = withJobs "./instaepub.sqlite" \jobs -> do
   scotty 8086 do
     post "/jobs" do
       url <- detectUrl <$> formParam "url" >>= \case
-        [] -> do
+        Nothing -> do
           status status400
           text "Coundn't find any URLs."
           finish
-        x : _ -> pure x
+        Just x -> pure x
       jid <- liftIO . newJob jobs $ url
       liftIO . void . forkIO . saveUrl jobs jid $ url
       redirect303 $ "/jobs"
@@ -199,8 +199,8 @@ saveUrl jobs jid url = handleHttpException . handlePandocError $ do
         Just u -> Image attr alts (URI.render . fromJust $ u `URI.relativeTo` base, title)
     inline -> inline
 
-detectUrl :: Text -> [Text]
-detectUrl t = getAllTextMatches (t =~ url)
+detectUrl :: Text -> Maybe Text
+detectUrl t = longest . getAllTextMatches $ t =~ url
   where
   url :: Text
   url = "(((http|https|Http|Https)://(([-a-zA-Z0-9$_.+!*'()"
@@ -220,6 +220,12 @@ detectUrl t = getAllTextMatches (t =~ url)
     <> "[0-9]|[0-1][0-9]{2}|[1-9][0-9]|[1-9]|0)\\.(25[0-5]|2[0-4][0-9]|[0-1]"
     <> "[0-9]{2}|[1-9][0-9]|[1-9]|0)\\.(25[0-5]|2[0-4][0-9]|[0-1][0-9]{2}"
     <> "|[1-9][0-9]|[0-9]))"
+  longest :: [Text] -> Maybe Text
+  longest xs = foldl' longer Nothing xs
+  longer Nothing x = Just x
+  longer (Just x) y
+    | Text.length x <= Text.length y = Just y
+    | otherwise = Just x
 
 sanitizeFileName :: Text -> Text
 sanitizeFileName = Text.map \c ->
