@@ -24,11 +24,9 @@ import Data.Text (Text)
 import Data.Time.LocalTime (getCurrentTimeZone, utcToLocalTime)
 import Data.Time.Format (formatTime, defaultTimeLocale, rfc822DateFormat)
 import GHC.Exception (Exception)
-import GHC.IO.Unsafe (unsafePerformIO)
 import Network.HTTP.Client (parseRequest, httpLbs, responseBody, HttpException)
 import Network.HTTP.Client.TLS (newTlsManager)
 import Network.HTTP.Types.Status (status400)
-import System.Environment (getEnv)
 import Text.Blaze.Html.Renderer.Text (renderHtml)
 import Text.Hamlet (shamlet)
 import Text.Pandoc (def, readHtml, docTitle, Pandoc(Pandoc), writeEPUB3, ReaderOptions(readerStandalone), WriterOptions(writerTemplate), compileDefaultTemplate, runIO, PandocError, Inline(Link, Image))
@@ -36,13 +34,9 @@ import Text.Pandoc.Shared (stringify)
 import Text.Pandoc.Walk (Walkable(walk))
 import Text.Regex.TDFA ((=~), getAllTextMatches)
 import Text.URI qualified as URI
-import Web.Scotty (scotty, get, post, queryParam, formParam, pathParam, setHeader, json, html, text, raw, regex, redirect303, next, finish, status, Parsable(..), readEither)
+import Web.Scotty (scotty, get, post, formParam, pathParam, setHeader, json, html, text, raw, regex, redirect303, next, finish, status, Parsable(..), readEither)
 
-import Persist (JobID, Jobs, Status(..), Job(..), withJobs, newJob, doneJob, failJob, queryJob, getJobs, getPendingJobs, markJob)
-
-{-# NOINLINE hostName #-}
-hostName :: Text
-hostName = Text.pack . unsafePerformIO . getEnv $ "HOSTNAME"
+import Persist (JobID, Jobs, Status(..), Job(..), withJobs, newJob, doneJob, failJob, queryJob, getJobs, getPendingJobs)
 
 main :: IO ()
 main = withJobs "./instaepub.sqlite" \jobs -> do
@@ -75,10 +69,6 @@ main = withJobs "./instaepub.sqlite" \jobs -> do
         Just job -> case job.status of
           Failed msg -> text . TextL.fromStrict $ msg
           _ -> next
-    get "/mark" do
-      jid <- parseJobID <$> queryParam "id"
-      liftIO $ markJob jobs jid True
-      text "Marked!"
     get "/jobs" do
       topJobs <- liftIO $ getJobs jobs
       tz <- liftIO getCurrentTimeZone
@@ -95,7 +85,6 @@ main = withJobs "./instaepub.sqlite" \jobs -> do
                 <th>URL
                 <th>Title
                 <th>Status
-                <th>Read?
               $forall job <- topJobs
                 <tr>
                   <td>#{formatTime defaultTimeLocale rfc822DateFormat (utcToLocalTime tz job.timeStamp)}
@@ -116,11 +105,6 @@ main = withJobs "./instaepub.sqlite" \jobs -> do
                       <td>
                         <a href="/jobs/#{show job.id}/errorLog">
                           Failed
-                  $if job.read
-                    <td>✓
-                  $else
-                    <td>✗
-
       |]
     get "/appmanifest" do
       setHeader "Content-Type" "application/manifest+json"
@@ -180,9 +164,8 @@ saveUrl jobs jid url = handleHttpException . handlePandocError $ do
   base <- URI.mkURI url
   (title, epub) <- liftEither =<< runIO do
     tmpl <- compileDefaultTemplate "epub3"
-    mark <- readHtml def $ "<p><a href=\"https://" <> hostName <> "/mark?id=" <> Text.pack (show jid) <> "\">Mark this document as read</a></p>"
     doc@(Pandoc meta _) <- addBaseToLinks base <$> readHtml def { readerStandalone = True } html'
-    (stringify (docTitle meta), ) <$> writeEPUB3 def { writerTemplate = Just tmpl } (mark <> doc <> mark)
+    (stringify (docTitle meta), ) <$> writeEPUB3 def { writerTemplate = Just tmpl } doc
   Text.putStrLn $ "Fetched article: " <> title
   doneJob jobs jid title (LBS.toStrict epub)
   where

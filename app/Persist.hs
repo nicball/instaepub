@@ -22,14 +22,13 @@ module Persist
   , queryJob
   , getJobs
   , getPendingJobs
-  , markJob
   ) where
 
 import Control.Arrow (first)
 import Control.Exception (bracket)
 import Control.Monad (void)
 import Control.Monad.Logger (runStderrLoggingT, filterLogger, LogLevel(..))
-import Database.Persist (PersistEntity(Key), PersistStoreRead(get), getBy, PersistStoreWrite(update, insert), (=.), selectList, SelectOpt(Desc), Entity(Entity), (==.))
+import Database.Persist (PersistEntity(Key), PersistStoreRead(get), getBy, PersistStoreWrite(update), PersistUniqueWrite(upsertBy, upsert), (=.), selectList, SelectOpt(Desc), Entity(Entity, entityKey), (==.))
 import Database.Persist.Sqlite (createSqlitePool)
 import Database.Persist.Sql (runMigration, SqlBackend, runSqlPersistMPool)
 import Database.Persist.TH (mkMigrate, mkPersist, persistLowerCase, share, sqlSettings)
@@ -49,7 +48,7 @@ JobE sql=job
   status JobStatusE default='PendingE'
   errorLog Text Maybe default=NULL
   title Text Maybe default=NULL
-  read Bool default=FALSE
+  UniqueUrl url
 EpubE sql=epub
   job JobEId OnDeleteCascade
   content ByteString
@@ -61,7 +60,6 @@ data Job = Job
   , url :: Text
   , timeStamp :: UTCTime
   , status :: Status
-  , read :: Bool
   }
 
 data Status
@@ -99,12 +97,12 @@ newJob :: Jobs -> Text -> IO JobID
 newJob jobs url = do
   timeStamp <- getCurrentTime
   JobID <$> flip runSqlPersistMPool jobs.pool do
-    insert $ JobE url timeStamp PendingE Nothing Nothing False
+    entityKey <$> upsertBy (UniqueUrl url) (JobE url timeStamp PendingE Nothing Nothing) [JobETimeStamp =. timeStamp]
 
 doneJob :: Jobs -> JobID -> Text -> ByteString -> IO ()
 doneJob jobs jid title epub = do
   flip runSqlPersistMPool jobs.pool do
-    void . insert $ EpubE jid.key epub
+    void $ upsert (EpubE jid.key epub) [EpubEContent =. epub]
     update jid.key [JobEStatus =. DoneE, JobETitle =. Just title]
 
 failJob :: Jobs -> JobID -> Text -> IO ()
@@ -116,7 +114,7 @@ queryJob :: Jobs -> JobID -> IO (Maybe Job)
 queryJob jobs jid = fmap (convertJobE jobs . Entity jid.key) <$> runSqlPersistMPool (get jid.key) jobs.pool
 
 convertJobE :: Jobs -> Entity JobE -> Job
-convertJobE jobs (Entity jid (JobE url ts st mel mtitle rd)) = Job (JobID jid) url ts (convertStatus st mel mtitle) rd
+convertJobE jobs (Entity jid (JobE url ts st mel mtitle)) = Job (JobID jid) url ts (convertStatus st mel mtitle)
   where
     convertStatus PendingE _ _ = Pending
     convertStatus DoneE _ (Just title) = Done title do
@@ -135,8 +133,3 @@ getPendingJobs :: Jobs -> IO [Job]
 getPendingJobs jobs = do
   flip runSqlPersistMPool jobs.pool do
     map (convertJobE jobs) <$> selectList [JobEStatus ==. PendingE] []
-
-markJob :: Jobs -> JobID -> Bool -> IO ()
-markJob jobs jid rd = do
-  flip runSqlPersistMPool jobs.pool do
-    update jid.key [JobERead =. rd]
