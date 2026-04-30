@@ -28,7 +28,7 @@ import Control.Arrow (first)
 import Control.Exception (bracket)
 import Control.Monad (void)
 import Control.Monad.Logger (runStderrLoggingT, filterLogger, LogLevel(..))
-import Database.Persist (PersistEntity(Key), PersistStoreRead(get), getBy, PersistStoreWrite(update), PersistUniqueWrite(upsertBy, upsert), (=.), selectList, SelectOpt(Desc), Entity(Entity, entityKey), (==.))
+import Database.Persist (PersistEntity(Key), PersistStoreRead(get), getBy, PersistStoreWrite(update), PersistUniqueWrite(upsertBy, upsert, deleteBy), (=.), selectList, SelectOpt(Desc), Entity(Entity, entityKey), (==.), selectKeysList)
 import Database.Persist.Sqlite (createSqlitePool)
 import Database.Persist.Sql (runMigration, SqlBackend, runSqlPersistMPool)
 import Database.Persist.TH (mkMigrate, mkPersist, persistLowerCase, share, sqlSettings)
@@ -97,6 +97,9 @@ newJob :: Jobs -> Text -> IO JobID
 newJob jobs url = do
   timeStamp <- getCurrentTime
   JobID <$> flip runSqlPersistMPool jobs.pool do
+    selectKeysList [JobEUrl ==. url] [] >>= \case
+      [k] -> deleteBy (EpubEPrimaryKey k)
+      _ -> pure ()
     entityKey <$> upsertBy (UniqueUrl url) (JobE url timeStamp PendingE Nothing Nothing) [JobETimeStamp =. timeStamp]
 
 doneJob :: Jobs -> JobID -> Text -> ByteString -> IO ()
