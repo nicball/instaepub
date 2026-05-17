@@ -16,6 +16,7 @@ import Data.Char (isLetter, isSpace, isNumber)
 import Data.FileEmbed (embedFile)
 import Data.Functor (void)
 import Data.Maybe (fromJust)
+import Data.Text.Encoding.Error qualified as Text
 import Data.Text.Encoding qualified as Text
 import Data.Text.IO qualified as Text
 import Data.Text.Lazy qualified as TextL
@@ -221,7 +222,7 @@ fetchHtml url = do
   man <- newTlsManager
   req <- parseRequest (Text.unpack url)
   resp <- httpLbs req man
-  liftEither . Text.decodeUtf8' . LBS.toStrict . responseBody $ resp
+  pure . Text.decodeUtf8With Text.lenientDecode . LBS.toStrict . responseBody $ resp
 
 liftEither :: Exception e => Either e a -> IO a
 liftEither (Left e) = throwIO e
