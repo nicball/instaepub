@@ -35,14 +35,17 @@ import Text.Pandoc.Shared (stringify)
 import Text.Pandoc.Walk (Walkable(walk))
 import Text.Regex.TDFA ((=~), getAllTextMatches)
 import Text.URI qualified as URI
-import Web.Scotty (scotty, get, post, formParam, pathParam, setHeader, json, html, text, raw, regex, redirect303, next, finish, status, Parsable(..), readEither)
+import Web.Scotty (scottyOpts, get, post, formParam, pathParam, setHeader, json, html, text, raw, regex, redirect303, next, finish, status, Parsable(..), readEither, Options(..), defaultOptions)
+import Network.Wai.Handler.Warp (setLogger, setPort)
 
 import Persist (JobID, Jobs, Status(..), Job(..), withJobs, newJob, doneJob, failJob, queryJob, getJobs, getPendingJobs)
 
 main :: IO ()
 main = withJobs "./instaepub.sqlite" \jobs -> do
   restartPendingJobs jobs
-  scotty 8086 do
+  let logRequest req st _ = putStrLn $ show req <> " " <> show st
+  let options = defaultOptions { settings = setPort 8086 . setLogger logRequest . settings $ defaultOptions }
+  scottyOpts options do
     post "/jobs" do
       url <- detectUrl <$> formParam "url" >>= \case
         Nothing -> do

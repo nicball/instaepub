@@ -90,6 +90,7 @@ executable instaepub
                     , shakespeare
                     , text
                     , time
+                    , warp
 
     -- Directories containing source files.
     hs-source-dirs:   app

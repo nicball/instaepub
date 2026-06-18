@@ -2,7 +2,7 @@
 , file-embed, http-client, http-client-tls, http-types, lib
 , modern-uri, monad-logger, pandoc, pandoc-types, persistent
 , persistent-sqlite, regex-tdfa, resource-pool, scotty, shakespeare
-, text, time
+, text, time, warp
 }:
 mkDerivation {
   pname = "instaepub";
@@ -14,7 +14,7 @@ mkDerivation {
     aeson base blaze-html bytestring containers file-embed http-client
     http-client-tls http-types modern-uri monad-logger pandoc
     pandoc-types persistent persistent-sqlite regex-tdfa resource-pool
-    scotty shakespeare text time
+    scotty shakespeare text time warp
   ];
   license = lib.licensesSpdx."AGPL-3.0-or-later";
   mainProgram = "instaepub";
